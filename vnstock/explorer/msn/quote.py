@@ -1,26 +1,25 @@
 """History module for MSN."""
 
-# Đồ thị giá, đồ thị dư mua dư bán, đồ thị mức giá vs khối lượng, thống kê hành vi thị tường
+# Đồ thị giá, đồ thị dư mua dư bán, đồ thị mức giá vs khối lượng, thống kê
+# hành vi thị tường
 import pandas as pd
 import requests
 from datetime import datetime
 from typing import Optional, Dict
 from vnai import optimize_execution
-from vnstock.core.base.registry import ProviderRegistry
-from vnstock.core.types import DataCategory, ProviderType, TimeFrame
+from vnstock.core.types import TimeFrame
 from vnstock.core.utils.interval import normalize_interval
 from vnstock.core.utils.logger import get_logger
 from vnstock.core.utils.user_agent import get_headers
 from vnstock.explorer.msn.listing import Listing
 from vnstock.explorer.msn.helper import msn_apikey
-from vnstock.core.models import TickerModel 
+from vnstock.core.models import TickerModel
 from vnstock.explorer.msn.helper import get_asset_type
 from .const import _BASE_URL, _RESAMPLE_MAP, _OHLC_MAP, _OHLC_DTYPE
 
 logger = get_logger(__name__)
 
 
-@ProviderRegistry.register(DataCategory.QUOTE, "msn", ProviderType.SCRAPING)
 class Quote:
     """
     MSN data source for fetching stock market data, accommodating requests with large date ranges.
@@ -37,25 +36,26 @@ class Quote:
         """
         Validate input data
         """
-        # Normalize interval to standard format
+        # Normalize interval to standard format (e.g., '1D', '1H', '1W', '1M')
         timeframe = normalize_interval(interval)
-        
+
+        # Get standardized interval value
+        timeframe_value = timeframe.value
+
         # Validate interval is supported by MSN
-        if str(timeframe) not in _RESAMPLE_MAP.keys():
+        if timeframe_value not in _RESAMPLE_MAP.keys():
             msg = (
-                f"Giá trị interval không hợp lệ: {timeframe}. "
+                f"Giá trị interval không hợp lệ: {timeframe_value}. "
                 f"MSN chỉ hỗ trợ: 1D, 1W, 1M"
             )
             raise ValueError(msg)
-        
-        # Create ticker model with normalized interval
+
+        # Create ticker model with standardized interval
         ticker = TickerModel(
-            symbol=self.symbol_id, start=start, end=end, 
-            interval=str(timeframe)
+            symbol=self.symbol_id, start=start, end=end,
+            interval=timeframe_value
         )
         return ticker
-    
-
     @optimize_execution('MSN')
     def history(self, start: str, end: Optional[str], interval: Optional[str] = "1D", show_log: bool = False, count_back: Optional[int] = 365, asset_type: Optional[str] = None) -> pd.DataFrame:
         """
@@ -75,10 +75,11 @@ class Quote:
 
         # Normalize interval for resample mapping
         timeframe = normalize_interval(ticker.interval)
-        
-        if str(timeframe) not in _RESAMPLE_MAP.keys():
+        timeframe_value = timeframe.value
+
+        if timeframe_value not in _RESAMPLE_MAP.keys():
             msg = (
-                f"Giá trị interval không hợp lệ: {timeframe}. "
+                f"Giá trị interval không hợp lệ: {timeframe_value}. "
                 f"MSN chỉ hỗ trợ: 1D, 1W, 1M"
             )
             raise ValueError(msg)
@@ -180,3 +181,8 @@ class Quote:
         df = df.dropna(subset=['open', 'high', 'low'])
 
         return df
+
+
+# Register MSN Quote provider
+from vnstock.core.registry import ProviderRegistry  # noqa: E402, F401
+ProviderRegistry.register('quote', 'msn', Quote)

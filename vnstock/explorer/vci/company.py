@@ -6,7 +6,9 @@ import json
 import pandas as pd
 from typing import Dict, Optional, Union, List
 from vnstock.core.utils import client
+from vnstock.core.utils.client import ProxyConfig
 from vnstock.core.utils.logger import get_logger
+from vnstock.core.utils.compat import replace_newlines_in_dataframe
 from vnstock.core.utils.user_agent import get_headers
 from vnstock.core.utils.transform import clean_html_dict, flatten_dict_to_df, flatten_list_to_df, reorder_cols, drop_cols_by_pattern
 from vnstock.core.utils.parser import get_asset_type, camel_to_snake
@@ -27,7 +29,10 @@ class Company:
         - show_log (bool): Hiển thị thông tin log hoặc không. Mặc định là False.
     """
     def __init__(self, symbol: str, random_agent: bool = False, 
-                 show_log: Optional[bool] = False):
+                 show_log: Optional[bool] = False,
+                 proxy_config: Optional[ProxyConfig] = None,
+                 proxy_mode: Optional[str] = None,
+                 proxy_list: Optional[List[str]] = None):
         """
         Khởi tạo đối tượng Company với các tham số cho việc truy xuất dữ liệu.
         """
@@ -40,6 +45,24 @@ class Company:
             
         self.headers = get_headers(data_source='VCI', random_agent=random_agent)
         self.show_log = show_log
+
+        # Handle proxy configuration
+        if proxy_config is None:
+            # Create ProxyConfig from individual arguments
+            p_mode = proxy_mode if proxy_mode else 'try'
+            # If user asks for 'auto' or provides list, set request_mode to PROXY
+            req_mode = 'direct'
+            if proxy_mode == 'auto' or (proxy_list and len(proxy_list) > 0):
+                req_mode = 'proxy'
+                
+            self.proxy_config = ProxyConfig(
+                proxy_mode=p_mode,
+                proxy_list=proxy_list,
+                request_mode=req_mode
+            )
+        else:
+            self.proxy_config = proxy_config
+
         self.raw_data = self._fetch_data()
         
         if not show_log:
@@ -69,7 +92,10 @@ class Company:
             headers=self.headers,
             method="POST",
             payload=payload,
-            show_log=self.show_log
+            show_log=self.show_log,
+            proxy_list=self.proxy_config.proxy_list,
+            proxy_mode=self.proxy_config.proxy_mode,
+            request_mode=self.proxy_config.request_mode
         )
         
         return response_data['data']
@@ -130,9 +156,8 @@ class Company:
         clean_data = clean_html_dict(data)
         df = flatten_dict_to_df(clean_data, 'financialRatio')
         
-        # Replace '\n' with ' ' in all string columns
-        # df = df.map(lambda x: x.replace('\n', ' ') if isinstance(x, str) else x) # This is for pandas 2.x
-        df = df.applymap(lambda x: x.replace('\n', ' ') if isinstance(x, str) else x) # This can be used for pandas 1.x and 2.x
+        # Replace '\n' with ' ' in all string columns using pandas-compatible method
+        df = replace_newlines_in_dataframe(df)
         
         # Convert to snake_case
         df.columns = [camel_to_snake(col) for col in df.columns]
@@ -403,3 +428,8 @@ class Company:
         df = reorder_cols(df, cols=['symbol'], position='first')
         
         return df
+
+
+# Register provider
+from vnstock.core.registry import ProviderRegistry  # noqa: E402, F401
+ProviderRegistry.register('company', 'vci', Company)

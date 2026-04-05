@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vnstock"
-version = "3.2.7"
+version = "3.5.0"
 description = "A beginner-friendly yet powerful Python toolkit for financial analysis and automation — built to make modern investing accessible to everyone"
 readme = "README.md"
 authors = [
@@ -28,8 +28,8 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
     "License :: Other/Proprietary License",
-    "Natural Language :: English",
     "Natural Language :: Vietnamese",
+    "Natural Language :: English",
 ]
 dependencies = [
     "requests",
@@ -38,26 +38,26 @@ dependencies = [
     "seaborn",
     "openpyxl",
     "pydantic",
+    "pytz",
     "psutil",
     "packaging>=20.0",
     "importlib-metadata>=1.0",
     "tenacity",
-    "vnai>=2.1.9"
+    "vnai>=2.3.9",
+    "vnstock_ezchart>=0.0.3",
 ]
 
 [project.optional-dependencies]
-dev = ["flake8"]
-docs = ["sphinx", "sphinx_rtd_theme"]
-test = ["unittest"]
+test = ["pytest>=7.0", "pytest-cov>=4.0", "pytest-timeout"]
 
 [project.urls]
-Documentation = "https://github.com/thinh-vu/vnstock"
+Documentation = "https://vnstocks.com/docs"
 Source = "https://github.com/thinh-vu/vnstock"
 IssueTracker = "https://github.com/thinh-vu/vnstock/issues"
 
 [tool.setuptools]
 include-package-data = true
-packages = { find = {} } # Support Python3.11
+packages = { find = {} }
 
 [tool.setuptools.package-data]
 vnstock = ["docs/*.txt", "docs/*.csv"]

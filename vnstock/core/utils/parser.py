@@ -1,16 +1,103 @@
 # vnstock/core/utils/parser.py
 
 import re
+import unicodedata
 import requests
 import pandas as pd
 import numpy as np
 from pytz import timezone
 from datetime import date, datetime, timedelta
+from dateutil.relativedelta import relativedelta
 from typing import Dict, Union, Literal, Any, Optional
-from vnstock.core.config.const import UA
 from vnstock.core.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Lazy import to avoid circular import
+_INDICES_INFO = None
+_UA = None
+
+def _get_indices_info():
+    """Lazy load INDICES_INFO to avoid circular import."""
+    global _INDICES_INFO
+    if _INDICES_INFO is None:
+        from vnstock.constants import INDICES_INFO as _ii
+        _INDICES_INFO = _ii
+    return _INDICES_INFO
+
+def _get_ua():
+    """Lazy load UA to avoid circular import."""
+    global _UA
+    if _UA is None:
+        from vnstock.core.config.const import UA as _ua
+        _UA = _ua
+    return _UA
+
+def get_asset_type(symbol: str) -> str:
+    """
+    Determine asset type based on provided security code.
+    Supports both legacy code format and new KRX format.
+    
+    Parameters:
+        - symbol (str): Security code or index symbol.
+    
+    Returns:
+        - 'index' if security code is an index symbol.
+        - 'stock' if security code is a stock symbol.
+        - 'derivative' if security code is a futures or options contract.
+        - 'bond' if security code is a government or corporate bond.
+        - 'coveredWarr' if security code is a covered warrant.
+    """
+    symbol = symbol.upper()
+    
+    # Standard market indices and HOSE managed indices
+    market_indices = {'VNINDEX', 'HNXINDEX', 'UPCOMINDEX', 'HNX30'}
+    # Combine with indices from constants
+    indices_info = _get_indices_info()
+    known_indices = market_indices.union(indices_info.keys())
+
+    if symbol in known_indices:
+        return 'index'
+    
+    # Stock symbols (assumed to have 3 characters)
+    elif len(symbol) == 3:
+        return 'stock'
+    
+    # New KRX derivative format (e.g., 41I1F4000)
+    krx_derivative_pattern = re.compile(r'^4[12][A-Z0-9]{2}[0-9A-HJ-NP-TV-W][1-9A-C]\d{3}$')
+    if krx_derivative_pattern.match(symbol):
+        return 'derivative'
+
+    # VN100 derivative patterns (e.g., VN100F1M, VN100F2M, VN100F1Q, VN100F2Q)
+    vn100_derivative_pattern = re.compile(r'^VN100F\d{1,2}[MQ]$')
+    if vn100_derivative_pattern.match(symbol):
+        return 'derivative'
+    
+    # For symbols that could be derivative or bond (length 7 or 9)
+    elif len(symbol) in [7, 9]:
+        # VN30 derivative patterns:
+        fm_pattern = re.compile(r'^VN30F\d{1,2}[MQ]$')
+        ym_pattern = re.compile(r'^VN30F\d{4}$')
+        
+        # Bond patterns:
+        # Government bond: e.g., GB05F2506 or GB10F2024
+        gov_bond_pattern = re.compile(r'^GB\d{2}F\d{4}$')
+        # Company bond: e.g., BAB122032; exclude those starting with VN30F.
+        comp_bond_pattern = re.compile(r'^(?!VN30F)[A-Z]{3}\d{6}$')
+        
+        if gov_bond_pattern.match(symbol) or comp_bond_pattern.match(symbol):
+            return 'bond'
+        elif fm_pattern.match(symbol) or ym_pattern.match(symbol):
+            return 'derivative'
+        else:
+            raise ValueError('Invalid derivative or bond symbol. Symbol must be in format of VN30F1M, VN30F2024, GB10F2024, or for company bonds, e.g., BAB122032')
+    
+    # Covered warrant symbols (assumed to have 8 characters)
+    elif len(symbol) == 8:
+        return 'coveredWarr'
+    
+    else:
+        raise ValueError('Invalid symbol. Your symbol format is not recognized!')
 
 def parse_timestamp(time_value):
     """
@@ -111,27 +198,28 @@ def localize_timestamp (
 
 def get_asset_type(symbol: str) -> str:
     """
-    Xác định loại tài sản dựa trên mã chứng khoán được cung cấp.
-    Hỗ trợ cả định dạng mã cũ và mã mới theo KRX.
+    Determine asset type based on provided security code.
+    Supports both legacy code format and new KRX format.
     
-    Tham số: 
-        - symbol (str): Mã chứng khoán hoặc mã chỉ số.
+    Parameters:
+        - symbol (str): Security code or index symbol.
     
-    Trả về:
-        - 'index' nếu mã chứng khoán là mã chỉ số.
-        - 'stock' nếu mã chứng khoán là mã cổ phiếu.
-        - 'derivative' nếu mã chứng khoán là mã hợp đồng tương lai hoặc quyền chọn.
-        - 'bond' nếu mã chứng khoán là mã trái phiếu (chính phủ hoặc doanh nghiệp).
-        - 'coveredWarr' nếu mã chứng khoán là mã chứng quyền.
+    Returns:
+        - 'index' if security code is an index symbol.
+        - 'stock' if security code is a stock symbol.
+        - 'derivative' if security code is a futures or options contract.
+        - 'bond' if security code is a government or corporate bond.
+        - 'coveredWarr' if security code is a covered warrant.
     """
     symbol = symbol.upper()
     
-    # Index symbols
-    if symbol in [
-        'VNINDEX', 'HNXINDEX', 'UPCOMINDEX', 'VN30', 'VN100', 'HNX30',
-        'VNSML', 'VNMID', 'VNALL', 'VNREAL', 'VNMAT', 'VNIT', 'VNHEAL',
-        'VNFINSELECT', 'VNFIN', 'VNENE', 'VNDIAMOND', 'VNCONS', 'VNCOND'
-    ]:
+    # Standard market indices and HOSE managed indices
+    market_indices = {'VNINDEX', 'HNXINDEX', 'UPCOMINDEX', 'HNX30'}
+    # Combine with indices from constants
+    indices_info = _get_indices_info()
+    known_indices = market_indices.union(indices_info.keys())
+
+    if symbol in known_indices:
         return 'index'
     
     # Stock symbols (assumed to have 3 characters)
@@ -142,11 +230,16 @@ def get_asset_type(symbol: str) -> str:
     krx_derivative_pattern = re.compile(r'^4[12][A-Z0-9]{2}[0-9A-HJ-NP-TV-W][1-9A-C]\d{3}$')
     if krx_derivative_pattern.match(symbol):
         return 'derivative'
+
+    # VN100 derivative patterns (e.g., VN100F1M, VN100F2M, VN100F1Q, VN100F2Q)
+    vn100_derivative_pattern = re.compile(r'^VN100F\d{1,2}[MQ]$')
+    if vn100_derivative_pattern.match(symbol):
+        return 'derivative'
     
     # For symbols that could be derivative or bond (length 7 or 9)
     elif len(symbol) in [7, 9]:
         # VN30 derivative patterns:
-        fm_pattern = re.compile(r'^VN30F\d{1,2}M$')
+        fm_pattern = re.compile(r'^VN30F\d{1,2}[MQ]$')
         ym_pattern = re.compile(r'^VN30F\d{4}$')
         
         # Bond patterns:
@@ -171,13 +264,13 @@ def get_asset_type(symbol: str) -> str:
 
 def camel_to_snake(name):
     """
-    Chuyển đổi tên biến từ dạng CamelCase sang snake_case.
+    Convert variable name from CamelCase to snake_case.
 
-    Tham số:
-        - name (str): Tên biến dạng CamelCase.
+    Parameters:
+        - name (str): Variable name in CamelCase.
 
-    Trả về:
-        - str: Tên biến dạng snake_case.
+    Returns:
+        - str: Variable name in snake_case.
     """
     str1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
     output = re.sub('([a-z0-9])([A-Z])', r'\1_\2', str1).lower()
@@ -185,14 +278,534 @@ def camel_to_snake(name):
     output = output.replace('.', '_')
     return output
 
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                    VIETNAMESE TEXT NORMALIZATION MODULE                      ║
+# ║                                                                              ║
+# ║  This module provides robust Vietnamese text normalization for financial     ║
+# ║  data processing, with accurate accent removal and database-friendly output.   ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+# Vietnamese character mapping for better accuracy
+VIETNAMESE_CHAR_MAP: Dict[str, str] = {
+    'à': 'a', 'á': 'a', 'ả': 'a', 'ã': 'a', 'ạ': 'a',
+    'ă': 'a', 'ằ': 'a', 'ắ': 'a', 'ẳ': 'a', 'ẵ': 'a', 'ặ': 'a',
+    'â': 'a', 'ầ': 'a', 'ấ': 'a', 'ẩ': 'a', 'ẫ': 'a', 'ậ': 'a',
+    'è': 'e', 'é': 'e', 'ẻ': 'e', 'ẽ': 'e', 'ẹ': 'e',
+    'ê': 'e', 'ề': 'e', 'ế': 'e', 'ể': 'e', 'ễ': 'e', 'ệ': 'e',
+    'ì': 'i', 'í': 'i', 'ỉ': 'i', 'ĩ': 'i', 'ị': 'i',
+    'ò': 'o', 'ó': 'o', 'ỏ': 'o', 'õ': 'o', 'ọ': 'o',
+    'ô': 'o', 'ồ': 'o', 'ố': 'o', 'ổ': 'o', 'ỗ': 'o', 'ộ': 'o',
+    'ơ': 'o', 'ờ': 'o', 'ớ': 'o', 'ở': 'o', 'ỡ': 'o', 'ợ': 'o',
+    'ù': 'u', 'ú': 'u', 'ủ': 'u', 'ũ': 'u', 'ụ': 'u',
+    'ư': 'u', 'ừ': 'u', 'ứ': 'u', 'ử': 'u', 'ữ': 'u', 'ự': 'u',
+    'ỳ': 'y', 'ý': 'y', 'ỷ': 'y', 'ỹ': 'y', 'ỵ': 'y',
+    'đ': 'd', 'Đ': 'd',
+}
+
+
+def remove_vietnamese_accents(text: str, use_map: bool = True) -> str:
+    """
+    Remove Vietnamese accents/diacritics from text.
+    
+    Args:
+        text: Vietnamese text with diacritics
+        use_map: Use predefined character map for accuracy (default: True)
+        
+    Returns:
+        Text with accents removed
+    """
+    if use_map:
+        # Use predefined mapping for Vietnamese characters (more accurate)
+        result = []
+        for char in text:
+            if char.lower() in VIETNAMESE_CHAR_MAP:
+                mapped = VIETNAMESE_CHAR_MAP[char.lower()]
+                result.append(mapped.upper() if char.isupper() else mapped)
+            else:
+                result.append(char)
+        return ''.join(result)
+    else:
+        # Fallback: Unicode normalization (may miss some Vietnamese chars)
+        nfd = unicodedata.normalize('NFD', text)
+        return ''.join(c for c in nfd if unicodedata.category(c) != 'Mn')
+
+
+def normalize_vietnamese_text_to_snake_case(
+    text: str,
+    keep_numbers: bool = True,
+    max_length: Optional[int] = None,
+    remove_common_words: bool = False,
+    preserve_acronyms: bool = False
+) -> str:
+    """
+    Convert Vietnamese text to ASCII-compatible snake_case identifier.
+    Robust normalization for Vietnamese financial line items and field names.
+    
+    Args:
+        text: Vietnamese or English text to normalize
+        keep_numbers: Whether to keep numeric digits (default: True)
+        max_length: Maximum length of output (default: None/unlimited)
+        remove_common_words: Remove Vietnamese stop words like 'của', 'và', 'các' (default: False)
+        preserve_acronyms: Try to preserve acronyms in uppercase before conversion
+        
+    Returns:
+        Snake_case identifier suitable for database column names
+        
+    Examples:
+        >>> normalize_vietnamese_text_to_snake_case("1. Doanh thu")
+        'doanh_thu'
+        >>> normalize_vietnamese_text_to_snake_case("Doanh thu bán hàng và cung cấp dịch vụ")
+        'doanh_thu_ban_hang_va_cung_cap_dich_vu'
+        >>> normalize_vietnamese_text_to_snake_case("Chi phí (2023-2024)")
+        'chi_phi_2023_2024'
+        >>> normalize_vietnamese_text_to_snake_case("Lợi nhuận sau thuế", remove_common_words=True)
+        'loi_nhuan_sau_thue'
+        >>> normalize_vietnamese_text_to_snake_case("EBITDA (Lãi trước thuế)")
+        'ebitda_lai_truoc_thue'
+    """
+    if not text or not text.strip():
+        return ""
+    
+    original_text = text
+    
+    # Step 1: Remove leading numbering patterns
+    # Handle: "1.", "I.", "A.", "1.1.2.", "1)", "(1)", etc.
+    text = re.sub(r'^[\dIVXivx]+(\.\d+)*[\.)]\s*', '', text)
+    text = re.sub(r'^\([0-9]+\)\s*', '', text)
+    text = re.sub(r'^[A-Za-z][\.)]\s*', '', text)
+    
+    # Step 2: Handle parenthetical content intelligently
+    # Option 1: Remove content in parentheses entirely (uncomment if preferred)
+    # text = re.sub(r'\([^)]*\)', '', text)
+    # Option 2: Keep parenthetical content (current behavior)
+    text = re.sub(r'[()]', ' ', text)
+    
+    # Step 3: Remove quotes, apostrophes, and other punctuation
+    text = re.sub(r"['\"`''""*&%$#@!?;:,.]", '', text)
+    
+    # Step 4: Remove Vietnamese accents/diacritics
+    text = remove_vietnamese_accents(text, use_map=True)
+    
+    # Step 5: Handle camelCase/PascalCase before lowercasing
+    if preserve_acronyms:
+        text = re.sub(r'([a-z])([A-Z])', r'\1_\2', text)
+    else:
+        text = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', text)
+    
+    # Step 6: Convert to lowercase
+    text = text.lower()
+    
+    # Step 7: Remove common Vietnamese stop words (optional)
+    if remove_common_words:
+        # Common Vietnamese words that don't add meaning to field names
+        stop_words = [
+            'cua', 'va', 'cac', 'cho', 'tren', 'duoi', 'trong', 'ngoai',
+            'tai', 'den', 'tu', 'voi', 'ma', 'la', 'thi', 'hay', 'hoac',
+            'nhung', 'moi', 'nam', 'thang', 'ngay', 'ky', 'dot', 'lan'
+        ]
+        # Create pattern to match whole words only
+        pattern = r'\b(' + '|'.join(stop_words) + r')\b'
+        text = re.sub(pattern, ' ', text)
+    
+    # Step 8: Replace special characters and spaces with underscores
+    if keep_numbers:
+        # Keep alphanumeric + spaces/hyphens/underscores
+        text = re.sub(r'[^a-z0-9\s_-]', ' ', text)
+    else:
+        # Keep only alphabetic + spaces/hyphens/underscores
+        text = re.sub(r'[^a-z\s_-]', ' ', text)
+    
+    # Step 9: Normalize whitespace and separators to underscores
+    text = re.sub(r'[\s\-/\\]+', '_', text)
+    
+    # Step 10: Remove consecutive underscores
+    text = re.sub(r'_+', '_', text)
+    
+    # Step 11: Remove leading/trailing underscores
+    text = text.strip('_')
+    
+    # Step 12: Ensure it doesn't start with a number (invalid Python/SQL identifier)
+    if text and text[0].isdigit():
+        text = f"n_{text}"  # 'n' for 'number' prefix
+    
+    # Step 13: Apply max length constraint if specified
+    if max_length and len(text) > max_length:
+        text = text[:max_length].rstrip('_')
+    
+    # Step 14: Fallback for empty result
+    if not text:
+        # Try to extract at least something from original text
+        fallback = re.sub(r'[^a-zA-Z0-9]', '', original_text)
+        if fallback:
+            text = fallback.lower()[:20]
+        else:
+            return ""  # Return empty string instead of 'unnamed_field'
+    
+    return text
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                      HELPER FUNCTIONS FOR VIETNAMESE                          ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def normalize_vietnamese_text_strict(text: str) -> str:
+    """
+    Strict version: Only alphabetic characters, no numbers.
+    Best for database column names that must be purely alphabetic.
+    
+    Examples:
+        >>> normalize_vietnamese_text_strict("2024 - Doanh thu thuần")
+        'doanh_thu_thuan'
+    """
+    if not text or not text.strip():
+        return ""
+    
+    # Remove accents
+    text = remove_vietnamese_accents(text)
+    
+    # Remove all non-alphabetic characters
+    text = re.sub(r'[^a-zA-Z\s]', ' ', text)
+    
+    # Convert to lowercase and normalize spaces
+    text = text.lower()
+    text = re.sub(r'\s+', '_', text)
+    text = re.sub(r'_+', '_', text)
+    text = text.strip('_')
+    
+    return text or "unnamed_field"
+
+
+def batch_normalize_vietnamese_fields(
+    texts: list[str],
+    **kwargs
+) -> Dict[str, str]:
+    """
+    Batch normalize multiple Vietnamese texts with collision detection.
+    
+    Args:
+        texts: List of Vietnamese texts to normalize
+        **kwargs: Arguments to pass to normalize_vietnamese_text_to_snake_case
+        
+    Returns:
+        Dictionary mapping original text to normalized snake_case
+        
+    Examples:
+        >>> batch_normalize_vietnamese_fields(["Doanh thu", "Doanh thu thuần"])
+        {'Doanh thu': 'doanh_thu', 'Doanh thu thuần': 'doanh_thu_thuan'}
+    """
+    result = {}
+    seen = {}
+    
+    for text in texts:
+        normalized = normalize_vietnamese_text_to_snake_case(text, **kwargs)
+        
+        # Handle collisions by appending counter
+        if normalized in seen:
+            counter = 2
+            base_normalized = normalized
+            while normalized in seen:
+                normalized = f"{base_normalized}_{counter}"
+                counter += 1
+        
+        result[text] = normalized
+        seen[normalized] = text
+    
+    return result
+
+def normalize_english_text_to_snake_case(
+    text: str,
+    keep_numbers: bool = True,
+    max_length: Optional[int] = None,
+    preserve_acronyms: bool = False,
+    preserve_hierarchy: bool = False
+) -> str:
+    """
+    Convert English text to snake_case identifier with robust normalization.
+    
+    Args:
+        text: English text to normalize
+        keep_numbers: Whether to keep numeric digits (default: True)
+        max_length: Maximum length of output (default: None/unlimited)
+        preserve_acronyms: Try to preserve acronyms like "API" -> "api" instead of breaking them
+        preserve_hierarchy: Preserve numbering prefixes for hierarchical structure (default: False)
+        
+    Returns:
+        Snake_case identifier suitable for database column names
+        
+    Examples:
+        >>> normalize_english_text_to_snake_case("1. Revenue")
+        'revenue'
+        >>> normalize_english_text_to_snake_case("1. Revenue", preserve_hierarchy=True)
+        '1.revenue'
+        >>> normalize_english_text_to_snake_case("A. ASSETS")
+        'assets'
+        >>> normalize_english_text_to_snake_case("A. ASSETS", preserve_hierarchy=True)
+        'a.assets'
+        >>> normalize_english_text_to_snake_case("Cash & cash equivalents")
+        'cash_and_cash_equivalents'
+        >>> normalize_english_text_to_snake_case("Shareholders' equity")
+        'shareholders_equity'
+    """
+    if not text or not text.strip():
+        return ""
+    
+    original_text = text
+    
+    # Step 1: Extract hierarchy prefix if preservation is enabled
+    hierarchy_prefix = ""
+    if preserve_hierarchy:
+        # Extract numbering patterns: "1.", "I.", "A.", "1.1.2", etc.
+        hierarchy_match = re.match(r'^([\dIVXivx]+(\.\d+)*|[A-Za-z])\.\s*', text)
+        if hierarchy_match:
+            hierarchy_prefix = hierarchy_match.group(1).lower() + '.'
+            text = text[len(hierarchy_match.group(0)):]  # Remove the prefix from text
+    
+    # Step 2: Normalize unicode (handle any accented characters)
+    text = unicodedata.normalize('NFKD', text)
+    text = text.encode('ascii', 'ignore').decode('ascii')
+    
+    # Step 3: Remove any remaining numbering patterns (only if not preserving hierarchy)
+    if not preserve_hierarchy:
+        text = re.sub(r'^\d+(\.\d+)*\.\s*', '', text)  # Handle 1., 1.1., 1.1.2., etc.
+        text = re.sub(r'^[IVXivx]+(\.\d+)*\.\s*', '', text)  # Handle Roman numerals
+        text = re.sub(r'^[A-Za-z]\.\s*', '', text)  # Handle A., B., etc.
+    
+    # Step 4: Convert to lowercase BEFORE processing special characters
+    text = text.lower()
+    
+    # Step 5: Replace & with 'and' for better readability (handle spaces properly)
+    text = re.sub(r'\s*&\s*', ' and ', text)
+    text = re.sub(r'^&', 'and ', text)  # Handle & at start
+    text = re.sub(r'&$', ' and', text)  # Handle & at end
+    
+    # Step 6: Remove apostrophes and quotes completely (BEFORE other processing)
+    text = re.sub(r"['\"`]", '', text)
+    
+    # Step 7: Handle camelCase/PascalCase by inserting underscores
+    if preserve_acronyms:
+        text = re.sub(r'([a-z])([A-Z])', r'\1_\2', text)
+        text = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', text)
+    else:
+        text = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', text)
+        text = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', text)
+    
+    # Step 8: Replace special characters with spaces (keep alphanumeric, spaces, hyphens)
+    if keep_numbers:
+        text = re.sub(r'[^a-z0-9\s_-]', ' ', text)
+    else:
+        text = re.sub(r'[^a-z\s_-]', ' ', text)
+    
+    # Step 9: Normalize whitespace and separators to underscores
+    text = re.sub(r'[\s\-/\\]+', '_', text)
+    
+    # Step 10: Remove consecutive underscores
+    text = re.sub(r'_+', '_', text)
+    
+    # Step 11: Remove leading/trailing underscores
+    text = text.strip('_')
+    
+    # Step 12: Combine hierarchy prefix with normalized text
+    if hierarchy_prefix and text:
+        text = hierarchy_prefix + text
+    
+    # Step 13: Ensure it doesn't start with a number (invalid identifier)
+    if text and text[0].isdigit():
+        text = f"n_{text}"
+    
+    # Step 14: Apply max length if specified
+    if max_length and len(text) > max_length:
+        text = text[:max_length].rstrip('_')
+    
+    # Step 15: Fallback for empty result - extract meaningful part from original
+    if not text:
+        fallback = re.sub(r'[^a-zA-Z0-9]', '', original_text)
+        if fallback:
+            text = fallback.lower()[:20]
+        else:
+            return ""  # Return empty string instead of 'unnamed_field'
+    
+    return text
+
+def normalize_vietnamese_text_to_snake_case(
+    text: str,
+    keep_numbers: bool = True,
+    max_length: Optional[int] = None,
+    remove_common_words: bool = False,
+    preserve_acronyms: bool = False,
+    preserve_hierarchy: bool = False
+) -> str:
+    """
+    Convert Vietnamese text to ASCII-compatible snake_case identifier.
+    Robust normalization for Vietnamese financial line items and field names.
+    
+    Args:
+        text: Vietnamese or English text to normalize
+        keep_numbers: Whether to keep numeric digits (default: True)
+        max_length: Maximum length of output (default: None/unlimited)
+        remove_common_words: Remove Vietnamese stop words like 'của', 'và', 'các' (default: False)
+        preserve_acronyms: Try to preserve acronyms in uppercase before conversion
+        preserve_hierarchy: Preserve numbering prefixes for hierarchical structure (default: False)
+        
+    Returns:
+        Snake_case identifier suitable for database column names
+        
+    Examples:
+        >>> normalize_vietnamese_text_to_snake_case("1. Doanh thu")
+        'doanh_thu'
+        >>> normalize_vietnamese_text_to_snake_case("1. Doanh thu", preserve_hierarchy=True)
+        '1.doanh_thu'
+        >>> normalize_vietnamese_text_to_snake_case("A. TÀI SẢN")
+        'tai_san'
+        >>> normalize_vietnamese_text_to_snake_case("A. TÀI SẢN", preserve_hierarchy=True)
+        'a.tai_san'
+        >>> normalize_vietnamese_text_to_snake_case("Doanh thu bán hàng và cung cấp dịch vụ")
+        'doanh_thu_ban_hang_va_cung_cap_dich_vu'
+        >>> normalize_vietnamese_text_to_snake_case("Chi phí (2023-2024)")
+        'chi_phi_2023_2024'
+        >>> normalize_vietnamese_text_to_snake_case("Lợi nhuận sau thuế", remove_common_words=True)
+        'loi_nhuan_sau_thue'
+        >>> normalize_vietnamese_text_to_snake_case("EBITDA (Lãi trước thuế)")
+        'ebitda_lai_truoc_thue'
+    """
+    if not text or not text.strip():
+        return ""
+    
+    original_text = text
+    
+    # Step 1: Extract hierarchy prefix if preservation is enabled
+    hierarchy_prefix = ""
+    if preserve_hierarchy:
+        # Extract numbering patterns: "1.", "I.", "A.", "1.1.2", etc.
+        hierarchy_match = re.match(r'^([\dIVXivx]+(\.\d+)*|[A-Za-z])\.\s*', text)
+        if hierarchy_match:
+            hierarchy_prefix = hierarchy_match.group(1).lower() + '.'
+            text = text[len(hierarchy_match.group(0)):]  # Remove the prefix from text
+    
+    # Step 2: Remove leading numbering patterns (only if not preserving hierarchy)
+    if not preserve_hierarchy:
+        # Handle: "1.", "I.", "A.", "1.1.2.", "1)", "(1)", etc.
+        text = re.sub(r'^[\dIVXivx]+(\.\d+)*[\.)]\s*', '', text)
+        text = re.sub(r'^\([0-9]+\)\s*', '', text)
+        text = re.sub(r'^[A-Za-z][\.)]\s*', '', text)
+    
+    # Step 3: Handle parenthetical content intelligently
+    # Option 1: Remove content in parentheses entirely (uncomment if preferred)
+    # text = re.sub(r'\([^)]*\)', '', text)
+    # Option 2: Keep parenthetical content (current behavior)
+    text = re.sub(r'[()]', ' ', text)
+    
+    # Step 4: Remove quotes, apostrophes, and other punctuation
+    text = re.sub(r"['\"`''""*&%$#@!?;:,.]", '', text)
+    
+    # Step 5: Remove Vietnamese accents/diacritics
+    text = remove_vietnamese_accents(text, use_map=True)
+    
+    # Step 6: Handle camelCase/PascalCase before lowercasing
+    if preserve_acronyms:
+        text = re.sub(r'([a-z])([A-Z])', r'\1_\2', text)
+        # Also handle consecutive uppercase letters followed by lowercase (e.g., XMLHttp)
+        text = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', text)
+    else:
+        text = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', text)
+        # Also handle consecutive uppercase letters followed by lowercase (e.g., XMLHttp)
+        text = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', text)
+    
+    # Step 7: Convert to lowercase
+    text = text.lower()
+    
+    # Step 8: Remove common Vietnamese stop words (optional)
+    if remove_common_words:
+        # Common Vietnamese words that don't add meaning to field names
+        stop_words = [
+            'cua', 'va', 'cac', 'cho', 'tren', 'duoi', 'trong', 'ngoai',
+            'tai', 'den', 'tu', 'voi', 'ma', 'la', 'thi', 'hay', 'hoac',
+            'nhung', 'moi', 'nam', 'thang', 'ngay', 'ky', 'dot', 'lan'
+        ]
+        # Create pattern to match whole words only
+        pattern = r'\b(' + '|'.join(stop_words) + r')\b'
+        text = re.sub(pattern, ' ', text)
+    
+    # Step 9: Replace special characters and spaces with underscores
+    if keep_numbers:
+        # Keep alphanumeric + spaces/hyphens/underscores
+        text = re.sub(r'[^a-z0-9\s_-]', ' ', text)
+    else:
+        # Keep only alphabetic + spaces/hyphens/underscores
+        text = re.sub(r'[^a-z\s_-]', ' ', text)
+    
+    # Step 10: Normalize whitespace and separators to underscores
+    text = re.sub(r'[\s\-/\\]+', '_', text)
+    
+    # Step 11: Remove consecutive underscores
+    text = re.sub(r'_+', '_', text)
+    
+    # Step 12: Remove leading/trailing underscores
+    text = text.strip('_')
+    
+    # Step 13: Combine hierarchy prefix with normalized text
+    if hierarchy_prefix and text:
+        text = hierarchy_prefix + text
+    
+    # Step 14: Ensure it doesn't start with a number (invalid Python/SQL identifier)
+    if text and text[0].isdigit():
+        text = f"n_{text}"  # 'n' for 'number' prefix
+    
+    # Step 15: Apply max length constraint if specified
+    if max_length and len(text) > max_length:
+        text = text[:max_length].rstrip('_')
+    
+    # Step 16: Fallback for empty result
+    if not text:
+        # Try to extract at least something from original text
+        fallback = re.sub(r'[^a-zA-Z0-9]', '', original_text)
+        if fallback:
+            text = fallback.lower()[:20]
+        else:
+            return ""  # Return empty string instead of 'unnamed_field'
+    
+    return text
+
+def normalize_text_to_snake_case_strict(text: str) -> str:
+    """
+    Strict version: Only keeps alphabetic characters.
+    Best for database column names that should be purely alphabetic.
+    """
+    if not text or not text.strip():
+        return ""
+    
+    # Normalize unicode
+    text = unicodedata.normalize('NFKD', text)
+    text = text.encode('ascii', 'ignore').decode('ascii')
+    
+    # Remove all non-alphabetic characters except spaces
+    text = re.sub(r'[^a-zA-Z\s]', ' ', text)
+    
+    # Convert to lowercase and replace spaces with underscores
+    text = text.lower()
+    text = re.sub(r'\s+', '_', text)
+    
+    # Remove consecutive underscores
+    text = re.sub(r'_+', '_', text)
+    
+    # Remove leading/trailing underscores
+    text = text.strip('_')
+    
+    return text or "unnamed_field"
+
+def is_valid_identifier(name: str) -> bool:
+    """Check if string is a valid Python/SQL identifier."""
+    if not name:
+        return False
+    return name.isidentifier() and not name[0].isdigit()
+
 def flatten_data(json_data, parent_key='', sep='_'):
     """
-    Làm phẳng dữ liệu JSON thành dạng dict tiêu chuẩn.
+    Flatten JSON data into standard dict format.
 
-    Tham số:
-        - json_data: Dữ liệu JSON trả về từ API.
-        - parent_key: Key cha của dữ liệu JSON.
-        - sep: Ký tự phân cách giữa các key.
+    Parameters:
+        - json_data: JSON data returned from API.
+        - parent_key: Parent key of JSON data.
+        - sep: Separator character between keys.
     """
     items = []
     for k, v in json_data.items():
@@ -213,12 +826,96 @@ def last_n_days(n):
 def decd(byte_data):
     from cryptography.fernet import Fernet
     import base64
-    kb = UA['Chrome'].replace(' ', '').ljust(32)[:32].encode('utf-8')
+    ua = _get_ua()
+    kb = ua['Chrome'].replace(' ', '').ljust(32)[:32].encode('utf-8')
     kb64 = base64.urlsafe_b64encode(kb)
     cipher = Fernet(kb64)
     return cipher.decrypt(byte_data).decode('utf-8')
 
-# VN30 Future contract parser
+def convert_time_flexible(
+    time_value: Optional[Union[str, int, float]],
+    time_format: Optional[str] = None,
+    to_iso: bool = False,
+    output_format: str = '%Y-%m-%d %H:%M:%S'
+) -> Optional[Union[str, int]]:
+    """
+    Flexibly convert time between different formats.
+
+    Parameters:
+        - time_value: Time value input (str, int, float, or None).
+          If string is epoch timestamp, will automatically convert to ISO.
+        - time_format: Custom format for input string (optional).
+        - to_iso: If True, convert from epoch timestamp to ISO string.
+                  If False (default), convert to epoch timestamp.
+        - output_format: Output string format when to_iso=True
+                        (default '%Y-%m-%d %H:%M:%S').
+
+    Returns:
+        - Epoch timestamp as string if to_iso=False.
+        - Datetime string if to_iso=True.
+        - None if time_value is None.
+    """
+    if time_value is None:
+        return None
+
+    if to_iso:
+        # Convert from epoch to ISO string
+        if isinstance(time_value, (int, float)):
+            dt = datetime.fromtimestamp(int(time_value))
+            return dt.strftime(output_format)
+        elif isinstance(time_value, str):
+            # Try parsing epoch string
+            try:
+                epoch = int(float(time_value))
+                dt = datetime.fromtimestamp(epoch)
+                return dt.strftime(output_format)
+            except (ValueError, OverflowError):
+                raise ValueError(
+                    f"Cannot parse epoch timestamp: {time_value}"
+                )
+        else:
+            raise ValueError(
+                f"For to_iso=True, time_value must be int, float, "
+                f"or epoch string, got {type(time_value)}"
+            )
+    else:
+        # Convert to epoch
+        if isinstance(time_value, (int, float)):
+            return str(int(time_value))
+
+        if isinstance(time_value, str):
+            if time_format:
+                try:
+                    dt = datetime.strptime(time_value, time_format)
+                    return str(int(dt.timestamp()))
+                except ValueError:
+                    raise ValueError(
+                        f"Invalid time_value format: {time_value} "
+                        f"with format {time_format}"
+                    )
+            else:
+                # Try default formats
+                for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
+                    try:
+                        dt = datetime.strptime(time_value, fmt)
+                        return str(int(dt.timestamp()))
+                    except ValueError:
+                        continue
+                raise ValueError(
+                    f"Cannot parse time_value: {time_value}. "
+                    f"Use 'YYYY-MM-DD' or "
+                    f"'YYYY-MM-DD HH:MM:SS' format or provide time_format."
+                )
+
+        raise ValueError(
+            f"time_value must be str, int, or float, "
+            f"got {type(time_value)}"
+        )
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                           FUTURE CONTRACT PARSER.                            ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
 _QUARTER_MONTHS = [3, 6, 9, 12]
 
@@ -319,3 +1016,162 @@ def vn30_abbrev_contract(full: str, today: date) -> str:
         raise ValueError(f"Sequence number {n} out of supported range.")
 
     return f"VN30F{n}{cycle}"
+
+def get_derivative_maturity_date(symbol_suffix: str, reference_date: date = None) -> date:
+    """
+    Calculate the maturity date for a derivative symbol suffix.
+    
+    Args:
+        symbol_suffix: Suffix like 'F2506' (explicit) or 'F1M', 'F1Q' (relative).
+        reference_date: Reference date for relative calculation (default: today).
+        
+    Returns:
+        date: The maturity date (3rd Thursday of the month).
+    """
+    if reference_date is None:
+        reference_date = date.today()
+        
+    maturity_month = reference_date.month
+    maturity_year = reference_date.year
+    
+    # Parse explicit format FyyMM (e.g., F2506)
+    if len(symbol_suffix) == 5 and symbol_suffix.startswith('F') and symbol_suffix[1:].isdigit():
+        yy = int(symbol_suffix[1:3])
+        mm = int(symbol_suffix[3:5])
+        maturity_year = 2000 + yy
+        maturity_month = mm
+    
+    # Parse relative format FnM/FnQ
+    elif symbol_suffix.startswith('F') and len(symbol_suffix) == 3:
+        # Determine current month's expiry to decide baseline
+        # Calculate 3rd Thursday of reference month
+        def get_expiry(y, m):
+            d = date(y, m, 1)
+            days_to_thursday = (3 - d.weekday() + 7) % 7
+            return d + timedelta(days=days_to_thursday + 14)
+            
+        current_expiry = get_expiry(reference_date.year, reference_date.month)
+        
+        # If today > expiry, start counting from next month
+        base_date = reference_date
+        if reference_date > current_expiry:
+             base_date = reference_date + relativedelta(months=1)
+        
+        if symbol_suffix == 'F1M':
+             target_date = base_date
+        elif symbol_suffix == 'F2M':
+             target_date = base_date + relativedelta(months=1)
+        elif symbol_suffix == 'F1Q':
+             # Next quarter month in [3, 6, 9, 12]
+             # Find first quarter month >= base_date month
+             current_month = base_date.month
+             quarter_months = [3, 6, 9, 12]
+             target_month = next((m for m in quarter_months if m >= current_month), None)
+             
+             if target_month is None:
+                 # Next year March
+                 target_date = date(base_date.year + 1, 3, 1)
+             else:
+                 target_date = date(base_date.year, target_month, 1)
+                 
+        elif symbol_suffix == 'F2Q':
+             # Find F1Q then next quarter
+             current_month = base_date.month
+             quarter_months = [3, 6, 9, 12]
+             target_month = next((m for m in quarter_months if m >= current_month), None)
+             
+             if target_month is None:
+                 # F1Q is next year Mar -> F2Q is Jun
+                 target_date = date(base_date.year + 1, 6, 1)
+             else:
+                 # Move to next quarter month
+                 idx = quarter_months.index(target_month)
+                 if idx + 1 < len(quarter_months):
+                      target_date = date(base_date.year, quarter_months[idx+1], 1)
+                 else:
+                      # Next year Mar
+                      target_date = date(base_date.year + 1, 3, 1)
+        else:
+             # Default fallback if unknown suffix
+             return reference_date
+
+        if 'target_date' in locals():
+            maturity_year = target_date.year
+            maturity_month = target_date.month
+
+    # Calculate 3rd Thursday of the determined maturity month
+    d = date(maturity_year, maturity_month, 1)
+    days_to_thursday = (3 - d.weekday() + 7) % 7
+    maturity_date = d + timedelta(days=days_to_thursday + 14)
+    
+    return maturity_date
+
+def convert_derivative_symbol(symbol: str, reference_date: date = None) -> str:
+    """
+    Convert old derivative symbol (e.g. VN30F2506, GB05F2506) to new KRX format (e.g. 41I1F7000).
+    Effective from May 2025.
+    
+    Format: 41 + Underlying + Year + Month + 000
+    Length: 9 chars.
+    Reference: https://owa.hnx.vn/ftp//PORTALNEW/HEADER_IMAGES/20250428/21.04.2025_Tai%20lieu%20huong%20dan%20quy%20uoc%20ma%20giao%20dich%20moi%20ckps_final.pdf
+    """
+    symbol = symbol.upper()
+    
+    # 1. Parse Segments
+    # Underlying mappings
+    underlying_map = {
+        'VN30': 'I1',
+        'VN100': 'I2', 
+        'GB05': 'B5', # Gov Bond 5Y
+        'GB10': 'BA', # Gov Bond 10Y
+    }
+    
+    underlying_code = None
+    suffix = None
+    
+    # Find underlying code by matching prefix
+    for prefix, code in underlying_map.items():
+        if symbol.startswith(prefix):
+            underlying_code = code
+            suffix = symbol[len(prefix):]
+            break
+            
+    if not underlying_code:
+        raise ValueError(f"Unknown underlying asset for symbol {symbol}. Supported prefixes: {', '.join(underlying_map.keys())}")
+        
+    # 2. Determine Maturity Year/Month
+    if reference_date is None:
+        # Check if suffix implies year/month directly first to avoid unnecessary date logic dependence if explicit
+        pass 
+        
+    mat_date = get_derivative_maturity_date(suffix, reference_date)
+    mat_year = mat_date.year
+    mat_month = mat_date.month
+        
+    # 3. Map to KRX Codes
+    
+    # Year Code (30 year cycle)
+    year_cycle_index = (mat_year - 2010) % 30 # 0 to 29
+    
+    # Alphabet: A-W excluding I, O, U
+    # A B C D E F G H J K L M N P Q R S T V W
+    alphabet = "ABCDEFGHJKLMNPQRSTVW" 
+    
+    if 0 <= year_cycle_index <= 9:
+        year_code = str(year_cycle_index)
+    else:
+        # Index 10 -> A (index 0 in alphabet)
+        year_code = alphabet[year_cycle_index - 10]
+        
+    # Month Code
+    if 1 <= mat_month <= 9:
+        month_code = str(mat_month)
+    else:
+        month_codes = {10: 'A', 11: 'B', 12: 'C'}
+        month_code = month_codes[mat_month]
+        
+    # 4. Construct
+    # Mẫu: 41 + Underlying + Year + Month + 000
+    krx_symbol = f"41{underlying_code}{year_code}{month_code}000"
+    
+    return krx_symbol

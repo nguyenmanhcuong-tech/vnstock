@@ -37,8 +37,8 @@ class DataCategory(str, Enum):
 
 class ProviderType(str, Enum):
     """Type of data provider."""
-    SCRAPING = "scraping"  # Web scraping sources (VCI, TCBS, MSN)
-    API = "api"            # REST API partners (FMP, XNO, Binance, DNSE)
+    SCRAPING = "scraping"  # Web scraping sources (VCI, MSN, KBS)
+    API = "api"            # REST API partners (FMP, Binance, DNSE)
 
 
 class MarketType(str, Enum):
@@ -66,6 +66,7 @@ class TimeFrame(str, Enum):
     Time frames for historical data.
     
     Unified from legacy TimeResolutions in constants.py.
+    Standard format: '1m', '5m', '1H', '1D', '1W', '1M'
     """
     # Minute intervals
     MINUTE_1 = "1m"
@@ -75,9 +76,9 @@ class TimeFrame(str, Enum):
     # Hour intervals
     HOUR_1 = "1H"
     HOUR_4 = "4h"
-    # Day/Week/Month intervals
-    DAY_1 = "D"
-    DAILY = "D"  # Alias for DAY_1
+    # Day/Week/Month intervals (standardized format)
+    DAY_1 = "1D"
+    DAILY = "1D"  # Alias for DAY_1
     WEEK_1 = "1W"
     WEEKLY = "1W"  # Alias for WEEK_1
     MONTH_1 = "1M"
@@ -91,13 +92,12 @@ class DataSource(str, Enum):
     Unified from legacy DataSources in constants.py.
     Maps to provider names in registry system.
     """
+    KBS = "kbs"
     VCI = "vci"
-    TCBS = "tcbs"
     MSN = "msn"
     DNSE = "dnse"
     BINANCE = "binance"
     FMP = "fmp"
-    XNO = "xno"
     FMARKET = "fmarket"  # Fund market
     
     @classmethod
@@ -506,10 +506,7 @@ class FileTypes:
 
 
 class ParameterNames:
-    """
-    Standardized parameter names.
-    Tên tham số chuẩn hóa.
-    """
+    """Standardized parameter names."""
     SYMBOL = "symbol"
     START = "start"
     END = "end"
@@ -519,10 +516,7 @@ class ParameterNames:
 
 
 class MethodNames:
-    """
-    Method names for dynamic method detection.
-    Tên phương thức cho phát hiện phương thức động.
-    """
+    """Method names for dynamic method detection."""
     HISTORY = "history"
     INTRADAY = "intraday"
     PRICE_DEPTH = "price_depth"

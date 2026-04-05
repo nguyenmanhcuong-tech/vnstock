@@ -1,31 +1,32 @@
 """History module for VCI."""
 
-from typing import Optional
+from typing import Optional, Union
 from datetime import datetime
 import pandas as pd
 from vnai import optimize_execution
-from vnstock.core.base.registry import ProviderRegistry
-from vnstock.core.types import DataCategory, ProviderType
+from vnstock.core.types import TimeFrame
 from vnstock.core.utils.interval import normalize_interval
 from .const import (
-    _TRADING_URL, _INTERVAL_MAP,
+    _TRADING_URL, _INTERVAL_MAP, _RESAMPLE_MAP,
     _OHLC_MAP, _OHLC_DTYPE, _INTRADAY_URL,
     _INTRADAY_MAP, _INTRADAY_DTYPE, _PRICE_DEPTH_MAP, _INDEX_MAPPING
 )
 from vnstock.core.models import TickerModel
 from vnstock.core.utils.logger import get_logger
 from vnstock.core.utils.market import trading_hours
-from vnstock.core.utils.parser import get_asset_type
+from vnstock.core.utils.parser import get_asset_type, convert_time_flexible
 from vnstock.core.utils.validation import validate_symbol
 from vnstock.core.utils.user_agent import get_headers
 from vnstock.core.utils.client import send_request, ProxyConfig
 from vnstock.core.utils.transform import ohlc_to_df, intraday_to_df
+from vnstock.core.utils.lookback import get_start_date_from_lookback, interpret_lookback_length
 
 logger = get_logger(__name__)
 
 # TimeFrame to interval key mapping
+# Standard format: m/1m=minute, h/1H=hour, d/1D=day, w/1W=week, M/1M=month
 _TIMEFRAME_MAP = {
-    'D': '1D',
+    '1D': '1D',
     '1H': '1H',
     '1W': '1W',
     '1M': '1M',
@@ -36,7 +37,6 @@ _TIMEFRAME_MAP = {
 }
 
 
-@ProviderRegistry.register(DataCategory.QUOTE, "vci", ProviderType.SCRAPING)
 class Quote:
     """
     The Quote class is used to fetch historical price data from VCI.
@@ -54,7 +54,9 @@ class Quote:
         symbol,
         random_agent=False,
         proxy_config: Optional[ProxyConfig] = None,
-        show_log=True
+        show_log=True,
+        proxy_mode: Optional[str] = None,
+        proxy_list: Optional[list] = None
     ):
         self.symbol = validate_symbol(symbol)
         self.data_source = 'VCI'
@@ -67,9 +69,23 @@ class Quote:
         )
         self.interval_map = _INTERVAL_MAP
         self.show_log = show_log
-        self.proxy_config = (
-            proxy_config if proxy_config is not None else ProxyConfig()
-        )
+        
+        # Handle proxy configuration
+        if proxy_config is None:
+            # Create ProxyConfig from individual arguments
+            p_mode = proxy_mode if proxy_mode else 'try'
+            # If user asks for 'auto' or provides list, set request_mode to PROXY
+            req_mode = 'direct'
+            if proxy_mode == 'auto' or (proxy_list and len(proxy_list) > 0):
+                req_mode = 'proxy'
+                
+            self.proxy_config = ProxyConfig(
+                proxy_mode=p_mode,
+                proxy_list=proxy_list,
+                request_mode=req_mode
+            )
+        else:
+            self.proxy_config = proxy_config
 
         if not show_log:
             logger.setLevel('CRITICAL')
@@ -124,33 +140,57 @@ class Quote:
     @optimize_execution("VCI")
     def history(
         self,
-        start: str,
+        start: Optional[str] = None,
         end: Optional[str] = None,
         interval: Optional[str] = "1D",
         show_log: Optional[bool] = False,
         count_back: Optional[int] = None,
-        floating: Optional[int] = 2
+        floating: Optional[int] = 2,
+        length: Optional[Union[str, int]] = None
     ) -> pd.DataFrame:
         """
         Tải lịch sử giá của mã chứng khoán từ nguồn dữ liệu VCI.
 
         Tham số:
-            - start (bắt buộc): thời gian bắt đầu lấy dữ liệu,
-              có thể là ngày dạng string kiểu "YYYY-MM-DD" hoặc
-              "YYYY-MM-DD HH:MM:SS".
+            - start (tùy chọn): thời gian bắt đầu lấy dữ liệu.
+              Bắt buộc nếu không có length hoặc count_back.
             - end (tùy chọn): thời gian kết thúc lấy dữ liệu.
-              Mặc định là None, chương trình tự động lấy thời điểm
-              hiện tại.
-            - interval (tùy chọn): Khung thời gian trích xuất dữ liệu
-              giá lịch sử. Giá trị nhận: 1m, 5m, 15m, 30m, 1H, 1D, 1W,
-              1M. Mặc định là "1D".
-            - show_log (tùy chọn): Hiển thị thông tin log giúp debug
-              dễ dàng. Mặc định là False.
-            - count_back (tùy chọn): Số lượng dữ liệu trả về từ thời
-              điểm cuối.
-            - floating (tùy chọn): Số chữ số thập phân cho giá.
-              Mặc định là 2.
+              Mặc định là None (hiện tại).
+            - interval (tùy chọn): Khung thời gian. Mặc định "1D".
+            - length (tùy chọn): Khoảng thời gian phân tích (vd: '3M', 150, '150').
+              Nhận giá trị chuỗi (vd 3M), số ngày (int/str), hoặc số bars (vd '100b').
+            - count_back (tùy chọn): Số lượng nến (bars) cần lấy.
+            - show_log (tùy chọn): Hiển thị log.
+            - floating (tùy chọn): Số chữ số thập phân.
         """
+        # Calculate start if not provided
+        if start is None:
+            # Check if length defines bars
+            if length is not None:
+                bars_from_len, len_remainder = interpret_lookback_length(length)
+                if bars_from_len is not None:
+                    count_back = bars_from_len
+                    length = None # Consumed as bars
+                else:
+                    length = len_remainder
+            
+            if length is not None:
+                start = get_start_date_from_lookback(
+                    lookback_length=length,
+                    end_date=end
+                )
+            elif count_back is not None:
+                start = get_start_date_from_lookback(
+                    bars=count_back,
+                    interval=interval,
+                    end_date=end
+                )
+            else:
+                raise ValueError(
+                    "Tham số 'start' là bắt buộc nếu không cung cấp "
+                    "'length' (hoặc 'period') hoặc 'count_back'."
+                )
+
         # Validate inputs
         ticker, interval_key = self._input_validation(
             start,
@@ -214,22 +254,23 @@ class Quote:
         auto_count_back = 1000
         business_days = pd.bdate_range(start=start_time, end=end_time)
 
-        if count_back is None and end is not None:
+        if count_back is None:
             interval_mapped = interval_value
 
             if interval_mapped == "ONE_DAY":
                 # Count business days (excluding weekends)
                 auto_count_back = len(business_days) + 1
             elif interval_mapped == "ONE_HOUR":
-                # Business days * trading hours per day (6.5 hours)
-                auto_count_back = int(len(business_days) * 6.5 + 1)
+                # Business days * trading hours per day (5 hours for VN market: 9-11:30, 13-14:45 approx 5 bars of 1H)
+                auto_count_back = int(len(business_days) * 5 + 1)
             elif interval_mapped == "ONE_MINUTE":
-                # Business days * trading minutes per day (390 min)
-                auto_count_back = int(len(business_days) * 390 + 1)
+                # Business days * trading minutes per day.
+                # Morning: 9:00-11:30 (150m)
+                # Afternoon: 13:00-14:45 (105m)
+                # Total: 255 minutes
+                auto_count_back = int(len(business_days) * 255 + 1)
         else:
-            auto_count_back = (
-                count_back if count_back is not None else 1000
-            )
+            auto_count_back = count_back
 
         # Prepare request
         url = f'{self.base_url}chart/OHLCChart/gap-chart'
@@ -249,8 +290,7 @@ class Quote:
             show_log=show_log if show_log is not None else False,
             proxy_list=self.proxy_config.proxy_list,
             proxy_mode=self.proxy_config.proxy_mode,
-            request_mode=self.proxy_config.request_mode,
-            hf_proxy_url=self.proxy_config.hf_proxy_url
+            request_mode=self.proxy_config.request_mode
         )
 
         # Debug: log response structure
@@ -301,7 +341,9 @@ class Quote:
             dtype_map=_OHLC_DTYPE,
             symbol=self.symbol,
             asset_type=self.asset_type,
-            source=self.data_source
+            source=self.data_source,
+            interval=interval_key,
+            resample_map=_RESAMPLE_MAP
         )
 
         return df
@@ -310,7 +352,8 @@ class Quote:
     def intraday(
         self,
         page_size: Optional[int] = 100,
-        last_time: Optional[str] = None,
+        last_time: Optional[Union[str, int, float]] = None,
+        last_time_format: Optional[str] = None,
         show_log: bool = False
     ) -> pd.DataFrame:
         """
@@ -321,10 +364,18 @@ class Quote:
             - page_size (tùy chọn): Số lượng dữ liệu trả về trong
               một lần request. Mặc định là 100.
             - last_time (tùy chọn): Thời gian cắt dữ liệu, dùng để
-              lấy dữ liệu sau thời gian cắt. Mặc định là None.
+              lấy dữ liệu sau thời gian cắt. Có thể là epoch timestamp
+              (int/float) hoặc chuỗi datetime. Mặc định là None.
+            - last_time_format (tùy chọn): Định dạng để parse last_time
+              nếu là chuỗi. Mặc định sẽ thử 'YYYY-MM-DD HH:MM:SS'
+              và 'YYYY-MM-DD'.
             - show_log (tùy chọn): Hiển thị thông tin log giúp debug
               dễ dàng. Mặc định là False.
         """
+        # Validator: Intraday data is not supported for indices
+        if self.asset_type == 'index':
+            raise ValueError(f"Dữ liệu intraday không được hỗ trợ cho chỉ số {self.symbol}.")
+
         market_status = trading_hours("HOSE")
         if (
             market_status['is_trading_hour'] is False and
@@ -348,11 +399,14 @@ class Quote:
                 "điều này có thể gây lỗi quá tải."
             )
 
+        # Parse last_time to epoch timestamp
+        parsed_last_time = convert_time_flexible(last_time, last_time_format)
+
         url = f'{self.base_url}{_INTRADAY_URL}/LEData/getAll'
         payload = {
             "symbol": self.symbol,
             "limit": page_size,
-            "truncTime": last_time
+            "truncTime": parsed_last_time
         }
 
         # Fetch data using the send_request utility
@@ -364,8 +418,7 @@ class Quote:
             show_log=show_log,
             proxy_list=self.proxy_config.proxy_list,
             proxy_mode=self.proxy_config.proxy_mode,
-            request_mode=self.proxy_config.request_mode,
-            hf_proxy_url=self.proxy_config.hf_proxy_url
+            request_mode=self.proxy_config.request_mode
         )
 
         # Ensure data is a list
@@ -384,62 +437,6 @@ class Quote:
 
         return df
 
-    @optimize_execution("VCI")
-    def price_depth(
-        self,
-        show_log: Optional[bool] = False
-    ) -> pd.DataFrame:
-        """
-        Truy xuất thống kê độ bước giá & khối lượng khớp lệnh của mã
-        chứng khoán bất kỳ từ nguồn dữ liệu VCI.
-
-        Tham số:
-            - show_log (tùy chọn): Hiển thị thông tin log giúp debug
-              dễ dàng. Mặc định là False.
-        """
-        market_status = trading_hours("HOSE")
-        if (
-            market_status['is_trading_hour'] is False and
-            market_status['data_status'] == 'preparing'
-        ):
-            raise ValueError(
-                f"{market_status['time']}: Dữ liệu khớp lệnh không "
-                f"thể truy cập trong thời gian chuẩn bị phiên mới. "
-                f"Vui lòng quay lại sau."
-            )
-
-        if self.symbol is None:
-            raise ValueError(
-                "Vui lòng nhập mã chứng khoán cần truy xuất khi "
-                "khởi tạo Trading Class."
-            )
-
-        url = (
-            f'{self.base_url}{_INTRADAY_URL}/'
-            f'AccumulatedPriceStepVol/getSymbolData'
-        )
-        payload = {"symbol": self.symbol}
-
-        # Fetch data using the send_request utility
-        data = send_request(
-            url=url,
-            headers=self.headers,
-            method="POST",
-            payload=payload,
-            show_log=show_log if show_log is not None else False,
-            proxy_list=self.proxy_config.proxy_list,
-            proxy_mode=self.proxy_config.proxy_mode,
-            request_mode=self.proxy_config.request_mode,
-            hf_proxy_url=self.proxy_config.hf_proxy_url
-        )
-
-        # Process the data to DataFrame
-        df = pd.DataFrame(data)
-
-        # Select columns in _PRICE_DEPTH_MAP and rename them
-        df = df[_PRICE_DEPTH_MAP.keys()]
-        df.rename(columns=_PRICE_DEPTH_MAP, inplace=True)
-
-        df.source = self.data_source
-
-        return df
+# Register VCI Quote provider
+from vnstock.core.registry import ProviderRegistry  # noqa: E402, F401
+ProviderRegistry.register('quote', 'vci', Quote)

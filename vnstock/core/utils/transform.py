@@ -19,12 +19,12 @@ vietnam_tz = pytz.timezone('Asia/Ho_Chi_Minh')
 
 def clean_numeric_string(s: Any) -> Any:
     """
-    Loại bỏ dấu phân nhóm (',' hoặc NBSP), chuẩn hoá dấu thập phân về '.'
+    Remove grouping separators (',' or NBSP), normalize decimal point to '.'.
     """
     if not isinstance(s, str):
         return s
     s = s.replace('\u00A0', '').replace(',', '')
-    # Nếu chỉ có một dấu ',' (nghĩa decimal), chuyển thành '.'
+    # If only one comma exists (as decimal), convert to period
     if s.count('.') == 0 and s.count(',') == 1:
         s = s.replace(',', '.')
     return s.strip()
@@ -55,57 +55,91 @@ def get_trading_date() -> datetime.date:
 def process_match_types(df, asset_type, source):
     """
     Process match_type labels with special handling for stock ATO/ATC transactions.
+    
+    For VCI:
+        - Replace 'b' with 'Buy' and 's' with 'Sell'.
+        - Missing values are represented by the string 'unknown'.
+    For MAS:
+        - Replace 'BUY' with 'Buy' and 'SELL' with 'Sell'.
+        - Fill in NaN values with 'unknown'.
+    For TCBS:
+        - Replace 'BU' with 'Buy' and 'SD' with 'Sell'.
+        - Missing values are assumed to be an empty string.
+    For KBS:
+        - Replace 'B' with 'Buy' and 'S' with 'Sell'.
+        - Missing values are assumed to be an empty string.
+    
+    Once basic replacements are done, if the asset type is 'stock' and missing
+    match_type values are present, the code will mark the ATO (at the earliest
+    morning transaction in the 9:13–9:17 window) and ATC (at the latest afternoon
+    transaction in the 14:43–14:47 window) within each trading day.
+    
+    Parameters:
+        df (DataFrame): The input DataFrame with a 'time' and 'match_type' column.
+        asset_type (str): The asset type (for example, 'stock').
+        source (str): The data source (e.g., 'VCI', 'MAS', 'TCBS', or 'KBS').
+        
+    Returns:
+        DataFrame: The modified DataFrame with updated match_type values.
     """
-    # Basic replacement - applies to all asset types
+    # --- Basic replacement and normalization ---
     if source == 'VCI':
         df['match_type'] = df['match_type'].replace({'b': 'Buy', 's': 'Sell'})
+    elif source == 'MAS':
+        df['match_type'] = df['match_type'].replace({'BUY': 'Buy', 'SELL': 'Sell'})
+        df['match_type'] = df['match_type'].fillna('unknown')
     elif source == 'TCBS':
         df['match_type'] = df['match_type'].replace({'BU': 'Buy', 'SD': 'Sell'})
+    elif source == 'KBS':
+        df['match_type'] = df['match_type'].replace({'B': 'Buy', 'S': 'Sell'})
     
-    # Only process ATO/ATC for stock assets
-    if asset_type == 'stock' and (
-        ('unknown' in df['match_type'].values and source == 'VCI') or 
-        ('' in df['match_type'].values and source == 'TCBS')
-    ):
-        # Sort by time to ensure correct order
+    # Determine the unknown value to check for based on the source
+    unknown_val = 'unknown' if source in ['VCI', 'MAS'] else ''
+    
+    # --- Process ATO/ATC labeling for stock assets ---
+    # Only run ATO/ATC logic if match_type contains missing values
+    if asset_type == 'stock' and (df['match_type'].eq(unknown_val).any() or df['match_type'].eq('').any()):
+        # Sort by time and add a temporary date column to group by trading day
         df = df.sort_values('time')
-        
-        # Create a date column for grouping by trading day
         df['date'] = df['time'].dt.date
-
-        # Process each trading day separately
-        for date in df['date'].unique():
-            day_mask = df['date'] == date
-            
-            # Create unknown mask based on source
-            if source == 'VCI':
-                unknown_mask = (df['match_type'] == 'unknown') & day_mask
-            else:  # TCBS
-                unknown_mask = (df['match_type'] == '') & day_mask
-            
-            unknown_indices = df[unknown_mask].index
-            
-            if len(unknown_indices) > 0:
-                # Morning session: Find transactions around 9:15 AM (9:13-9:17)
-                morning_mask = unknown_mask & (df['time'].dt.hour == 9) & (df['time'].dt.minute >= 13) & (df['time'].dt.minute <= 17)
-                morning_indices = df[morning_mask].index
-                
-                # Afternoon session: Find transactions around 2:45 PM (14:43-14:47)
-                afternoon_mask = unknown_mask & (df['time'].dt.hour == 14) & (df['time'].dt.minute >= 43) & (df['time'].dt.minute <= 47)
-                afternoon_indices = df[afternoon_mask].index
-                
-                # Label ATO for first morning session transaction
-                if len(morning_indices) > 0:
-                    ato_idx = df.loc[morning_indices, 'time'].idxmin()
-                    df.loc[ato_idx, 'match_type'] = 'ATO'
-                
-                # Label ATC for last afternoon session transaction
-                if len(afternoon_indices) > 0:
-                    atc_idx = df.loc[afternoon_indices, 'time'].idxmax()
-                    df.loc[atc_idx, 'match_type'] = 'ATC'
         
-        # Remove the temporary date column
-        df = df.drop(columns=['date'])
+        # Group by date and process each day
+        def process_day(day_df):
+            # Identify rows with missing match_type
+            unknown_df = day_df[day_df['match_type'] == unknown_val]
+            if unknown_df.empty:
+                return day_df
+
+            # Morning session: filter for transactions between 9:13 and 9:17
+            morning_df = unknown_df[
+                (unknown_df['time'].dt.hour == 9) &
+                (unknown_df['time'].dt.minute.between(13, 17))
+            ]
+            if not morning_df.empty:
+                # Set the earliest transaction time as ATO
+                min_idx = morning_df['time'].idxmin()
+                day_df.loc[min_idx, 'match_type'] = 'ATO'
+            
+            # Afternoon session: filter for transactions between 14:43 and 14:47
+            afternoon_df = unknown_df[
+                (unknown_df['time'].dt.hour == 14) &
+                (unknown_df['time'].dt.minute.between(43, 47))
+            ]
+            if not afternoon_df.empty:
+                # Set the latest transaction time as ATC
+                max_idx = afternoon_df['time'].idxmax()
+                day_df.loc[max_idx, 'match_type'] = 'ATC'
+            
+            return day_df
+        
+        # Apply the processing function to each trading day
+        try:
+            df = df.groupby('date', group_keys=False).apply(process_day, include_groups=False)
+        except TypeError:
+            df = df.groupby('date', group_keys=False).apply(process_day)
+        # Drop date column if it exists
+        if 'date' in df.columns:
+            df.drop(columns=['date'], inplace=True)
     
     return df
 
@@ -185,17 +219,23 @@ def ohlc_to_df(
     # Apply data types
     for col, dtype in dtype_map.items():
         if col in df.columns:
-            if dtype == "datetime64[ns]" and hasattr(df[col], 'dt') and df[col].dt.tz is not None:
-                df[col] = df[col].dt.tz_localize(None)  # Remove timezone info
-                if interval == "1D":
-                    df[col] = df[col].dt.date
+            # Only convert datetime to date for daily interval
+            if (dtype == "datetime64[ns]" and
+                    hasattr(df[col], 'dt') and
+                    df[col].dt.tz is not None):
+                df[col] = df[col].dt.tz_localize(None)
+
+            # Only remove timezone and convert to date for "1D"
+            if col == 'time' and interval == "1D":
+                df[col] = df[col].dt.date
+
             df[col] = df[col].astype(dtype)
-    
+
     # Add metadata
     df.name = symbol
     df.category = asset_type
     df.source = source
-    
+
     return df
 
 def intraday_to_df(
@@ -207,12 +247,11 @@ def intraday_to_df(
     source: str
 ) -> pd.DataFrame:
     """
-    Convert intraday trading data to standardized DataFrame format,
-    với:
-      - Tiền xử lý chuỗi số cho price/volume
-      - Map scale dựa trên source (không hardcode /1000)
-      - Kiểm soát NaN, rounding volume an toàn
-      - Xử lý time, match_type như trước
+    Convert intraday trading data to standardized DataFrame format.
+    
+    Pre-processes numeric strings for price and volume, applies source-based
+    scaling (not hardcoded division), handles NaN safely with volume rounding,
+    and processes time and match_type consistently.
     """
     # --- Early exit ---
     if not data:
@@ -224,39 +263,51 @@ def intraday_to_df(
 
     df = pd.DataFrame(data)
 
-    # --- Chọn & rename columns ---
+    # --- Select and rename columns ---
     available = [c for c in column_map if c in df.columns]
     if not available:
-        raise ValueError(f"Expected columns {list(column_map)} not found, got {df.columns.tolist()}")
-    df = df[available].rename(columns={k: column_map[k] for k in available})
+        raise ValueError(
+            f"Expected columns {list(column_map)} not found, "
+            f"got {df.columns.tolist()}"
+        )
+    df = df[available].rename(columns={k: column_map[k]
+                                       for k in available})
 
-    # --- Làm sạch & chuyển numeric ---
+    # --- Clean and convert to numeric ---
     for col in ('price', 'volume'):
         if col in df.columns:
-            # Tiền xử lý chuỗi
+            # Pre-process string
             df[col] = df[col].map(clean_numeric_string)
-            # Chuyển sang float, lỗi thành NaN
+            # Convert to float, errors become NaN
             df[col] = pd.to_numeric(df[col], errors='coerce')
             n_bad = df[col].isna().sum()
             if n_bad:
-                print(f"[Warning] {n_bad} giá trị ở '{col}' không parse được, chuyển thành NaN")
+                msg = (
+                    f"[Warning] {n_bad} values in '{col}' "
+                    f"could not be parsed, converted to NaN"
+                )
+                print(msg)
 
-    # --- Scale price theo source ---
+    # --- Scale price by source ---
     scale_map = {'VCI': 1000, 'MAS': 1000}
     scale = scale_map.get(source, 1)
     if 'price' in df.columns:
         df['price'] = df['price'] / scale
 
-    # --- Volume: round & cast int ---
+    # --- Volume: round and cast to int ---
     if 'volume' in df.columns:
         vol = df['volume'].fillna(0)
-        # Kiểm tra nếu có decimal
+        # Check if there are decimal values
         mask = (vol % 1 != 0)
         if mask.any():
-            print(f"[Info] {int(mask.sum())} giá trị volume có decimal, sẽ làm tròn")
+            msg = (
+                f"[Info] {int(mask.sum())} volume values have "
+                f"decimals, will be rounded"
+            )
+            print(msg)
         df['volume'] = vol.round().astype(int)
 
-    # --- Xử lý cột time như trước ---
+    # --- Process time column ---
     if 'time' in df.columns:
         trading_date = get_trading_date()
 
@@ -280,16 +331,16 @@ def intraday_to_df(
                 if df['time'].dt.tz is None:
                     df['time'] = localize_timestamp(df['time'], return_string=False)
 
-    # --- Process match types như bạn đã định nghĩa ---
+    # --- Process match types as defined ---
     if 'match_type' in df.columns:
         df = process_match_types(df, asset_type, source)
 
-    # --- Sort, reset index & apply dtype ---
+    # --- Sort, reset index and apply data types ---
     if 'time' in df.columns:
         df = df.sort_values('time')
     df = df.reset_index(drop=True)
 
-    # Áp dtype_map (không tính time)
+    # Apply dtype_map (excluding time)
     type_map = {k: v for k, v in dtype_map.items() if k in df.columns and k != 'time'}
     if type_map:
         df = df.astype(type_map)
@@ -693,7 +744,6 @@ def drop_cols_by_pattern(df, patterns, regex=True, case_sensitive=False):
     # Return DataFrame with matched columns removed
     return df.drop(columns=cols_to_drop)
 
-
 def resample_ohlcv(df: pd.DataFrame,
                    interval: str,
                    freq_map: Optional[Dict[str, str]] = None,
@@ -713,10 +763,12 @@ def resample_ohlcv(df: pd.DataFrame,
     freq_map : Optional[Dict[str, str]], optional
         Mapping from interval to pandas frequency string. Default supports:
         - '1W': 'W' (weekly)
-        - '1M': 'M' (monthly)
+        - '1M': 'ME' (month end, pandas 2.2+)
         - '1H': 'H' (hourly)
         - '5min': '5min' (5-minute)
         If an interval not in freq_map, used directly as frequency.
+        Note: Frequency strings are automatically normalized for compatibility
+        across pandas versions using normalize_frequency_string()
     time_col : str, optional
         Name of the time column (default: 'time')
 
@@ -754,6 +806,8 @@ def resample_ohlcv(df: pd.DataFrame,
         * volume: sums all values
         * other columns: uses last value
     - Result is sorted by time with index reset
+    - For pandas 2.2+ compatibility with month-end frequency ('ME'), 
+      consider using safe_resample_dataframe() from vnstock.core.utils.compat
     """
     if time_col not in df.columns:
         raise KeyError(
@@ -765,7 +819,7 @@ def resample_ohlcv(df: pd.DataFrame,
     if freq_map is None:
         freq_map = {
             '1W': 'W',
-            '1M': 'M',
+            '1M': 'ME',
             '1H': 'H',
             '5min': '5min',
             '15min': '15min',

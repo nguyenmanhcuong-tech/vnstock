@@ -49,7 +49,6 @@ from .client import (
     send_request,
     send_direct_request,
     send_proxy_request,
-    send_hf_proxy_request,
     ProxyMode,
     RequestMode,
     ProxyConfig,
@@ -64,6 +63,33 @@ from .env import (
     get_username,
     get_cwd,
     get_path_delimiter,
+)
+
+# Deprecation utilities
+from .deprecation import (
+    deprecated,
+    deprecate_provider,
+    warn_deprecated,
+    get_deprecation_info,
+    list_deprecated_features,
+    DeprecationRegistry,
+)
+
+# Authentication utilities
+from .auth import (
+    register_user,
+    change_api_key,
+    check_status,
+)
+
+# Pandas compatibility utilities
+from .compat import (
+    apply_to_dataframe,
+    replace_newlines_in_dataframe,
+    strip_whitespace_in_dataframe,
+    get_pandas_info,
+    normalize_frequency_string,
+    safe_resample_dataframe,
 )
 
 __all__ = [
@@ -102,7 +128,6 @@ __all__ = [
     'send_request',
     'send_direct_request',
     'send_proxy_request',
-    'send_hf_proxy_request',
     'ProxyMode',
     'RequestMode',
     'ProxyConfig',
@@ -114,4 +139,22 @@ __all__ = [
     'get_username',
     'get_cwd',
     'get_path_delimiter',
+    # Deprecation
+    'deprecated',
+    'deprecate_provider',
+    'warn_deprecated',
+    'get_deprecation_info',
+    'list_deprecated_features',
+    'DeprecationRegistry',
+    # Authentication
+    'register_user',
+    'change_api_key',
+    'check_status',
+    # Pandas compatibility
+    'apply_to_dataframe',
+    'replace_newlines_in_dataframe',
+    'strip_whitespace_in_dataframe',
+    'get_pandas_info',
+    'normalize_frequency_string',
+    'safe_resample_dataframe',
 ]

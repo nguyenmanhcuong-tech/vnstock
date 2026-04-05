@@ -1,7 +1,7 @@
 """Listing module."""
 
 # Đồ thị giá, đồ thị dư mua dư bán, đồ thị mức giá vs khối lượng, thống kê hành vi thị tường
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from .const import _GROUP_CODE, _TRADING_URL, _GRAPHQL_URL
 import json
@@ -10,30 +10,50 @@ import pandas as pd
 from vnstock.core.utils.parser import camel_to_snake
 from vnstock.core.utils.logger import get_logger
 from vnstock.core.utils.user_agent import get_headers
-from vnstock.core.utils.client import send_request
+from vnstock.core.utils.client import send_request, ProxyConfig
 from vnstock.core.utils.transform import drop_cols_by_pattern, reorder_cols
+from vnstock.common import indices as market_indices
 from vnai import optimize_execution
 logger = get_logger(__name__)
 
 class Listing:
-    """
-    Cấu hình truy cập dữ liệu lịch sử giá chứng khoán từ VCI.
-    """
-    def __init__(self, random_agent:Optional[bool]=False, show_log:Optional[bool]=False):
+    """Cấu hình truy cập dữ liệu lịch sử giá chứng khoán từ VCI."""
+
+    def __init__(self, random_agent: Optional[bool] = False, show_log: Optional[bool] = False,
+                 proxy_config: Optional[ProxyConfig] = None,
+                 proxy_mode: Optional[str] = None,
+                 proxy_list: Optional[List[str]] = None):
         self.data_source = 'VCI'
         self.base_url = _TRADING_URL
         self.headers = get_headers(data_source=self.data_source, random_agent=random_agent)
         self.show_log = show_log
+
+        # Handle proxy configuration
+        if proxy_config is None:
+            # Create ProxyConfig from individual arguments
+            p_mode = proxy_mode if proxy_mode else 'try'
+            # If user asks for 'auto' or provides list, set request_mode to PROXY
+            req_mode = 'direct'
+            if proxy_mode == 'auto' or (proxy_list and len(proxy_list) > 0):
+                req_mode = 'proxy'
+                
+            self.proxy_config = ProxyConfig(
+                proxy_mode=p_mode,
+                proxy_list=proxy_list,
+                request_mode=req_mode
+            )
+        else:
+            self.proxy_config = proxy_config
+
         if not show_log:
             logger.setLevel('CRITICAL')
 
     @optimize_execution("VCI")
-    def all_symbols (self, show_log: Optional[bool] = False) -> pd.DataFrame:
-        """
-        Truy xuất danh sách toàn bộ mã và tên các cổ phiếu trên thị trường Việt Nam.
+    def all_symbols(self, show_log: Optional[bool] = False) -> pd.DataFrame:
+        """Truy xuất danh sách toàn bộ mã và tên các cổ phiếu trên thị trường Việt Nam.
 
-        Tham số:
-            - show_log (tùy chọn): Hiển thị thông tin log giúp debug dễ dàng. Mặc định là False.
+        Args:
+            show_log: Hiển thị thông tin log giúp debug dễ dàng. Mặc định là False.
         """
         df = self.symbols_by_exchange(show_log=show_log)
         df = df.query('type == "STOCK"').reset_index(drop=True)
@@ -62,7 +82,10 @@ class Listing:
             headers=self.headers,
             method="POST",
             payload=payload,
-            show_log=show_log
+            show_log=show_log,
+            proxy_list=self.proxy_config.proxy_list,
+            proxy_mode=self.proxy_config.proxy_mode,
+            request_mode=self.proxy_config.request_mode
         )
 
         if not json_data:
@@ -87,7 +110,6 @@ class Listing:
         return df
 
     @optimize_execution("VCI")
-    @optimize_execution("VCI")
     def symbols_by_exchange(self, lang: str = 'vi', show_log: Optional[bool] = False) -> pd.DataFrame:
         """
         Truy xuất thông tin niêm yết theo sàn của các mã cổ phiếu trên thị trường Việt Nam.
@@ -107,7 +129,10 @@ class Listing:
             headers=self.headers,
             method="GET",
             payload=None,
-            show_log=show_log
+            show_log=show_log,
+            proxy_list=self.proxy_config.proxy_list,
+            proxy_mode=self.proxy_config.proxy_mode,
+            request_mode=self.proxy_config.request_mode
         )
 
         if not json_data:
@@ -151,7 +176,10 @@ class Listing:
             headers=self.headers,
             method="POST",
             payload=payload,
-            show_log=show_log
+            show_log=show_log,
+            proxy_list=self.proxy_config.proxy_list,
+            proxy_mode=self.proxy_config.proxy_mode,
+            request_mode=self.proxy_config.request_mode
         )
 
         if not json_data:
@@ -188,7 +216,10 @@ class Listing:
             headers=self.headers,
             method="GET",
             payload=None,
-            show_log=show_log
+            show_log=show_log,
+            proxy_list=self.proxy_config.proxy_list,
+            proxy_mode=self.proxy_config.proxy_mode,
+            request_mode=self.proxy_config.request_mode
         )
 
         if show_log:
@@ -218,4 +249,37 @@ class Listing:
     def all_bonds(self, show_log: Optional[bool] = False) -> pd.Series:
         return self.symbols_by_group(group='BOND', show_log=show_log)
 
+    # =========================================================================
+    # STANDARDIZED MARKET INDICES (Wrapper functions)
+    # =========================================================================
+    # Provide access to standardized indices across all data sources
+    # (VCI, MSN, etc.). Sector indices include mapping to ICB
+    # sector_id for industry filtering and analysis.
 
+    def all_indices(self) -> pd.DataFrame:
+        """
+        Lấy danh sách tất cả các chỉ số tiêu chuẩn hóa với thông tin đầy đủ.
+
+        Returns:
+            pd.DataFrame: Columns [symbol, name, description, full_name,
+                                   group, index_id, sector_id (for sectors)]
+        """
+        return market_indices.get_all_indices()
+
+    def indices_by_group(self, group: str) -> Optional[pd.DataFrame]:
+        """
+        Lấy danh sách chỉ số theo nhóm tiêu chuẩn hóa.
+
+        Args:
+            group: Tên nhóm (VD: 'HOSE Indices', 'Sector Indices', etc.)
+
+        Returns:
+            pd.DataFrame: Danh sách chỉ số trong nhóm hoặc None
+                          (Sector indices include sector_id mapping)
+        """
+        return market_indices.get_indices_by_group(group)
+
+
+# Register provider
+from vnstock.core.registry import ProviderRegistry  # noqa: E402, F401
+ProviderRegistry.register('listing', 'vci', Listing)

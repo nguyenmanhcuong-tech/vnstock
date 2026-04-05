@@ -29,20 +29,24 @@ class Company(BaseAdapter):
     """
     def __init__(
         self,
-        source: str = "vci",
+        source: str = "KBS",
         symbol: str = None,
         random_agent: bool = False,
         show_log: bool = False
     ):
+        # Ensure explorer modules are loaded (lazy load to avoid deadlock)
+        from vnstock import _ensure_explorer_modules_loaded
+        _ensure_explorer_modules_loaded()
+        
         # Store parameters for later use
         self.source = source
         self.symbol = symbol if symbol else ""
         self.random_agent = random_agent
         self.show_log = show_log
         
-        # Validate the source to only accept vci or tcbs
-        if source.lower() not in ["vci", "tcbs"]:
-            raise ValueError("Lớp Company chỉ nhận giá trị tham số source là 'VCI' hoặc 'TCBS'.")
+        # Validate the source to only accept kbs, vci
+        if source.lower() not in ["kbs", "vci"]:
+            raise ValueError("Lớp Company chỉ nhận giá trị tham số source là 'VCI' hoặc 'KBS'.")
         
         # BaseAdapter will discover vnstock.explorer.<real_source>.company
         # and pass only the kwargs its __init__ accepts (random_agent, show_log).
