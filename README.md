@@ -800,3 +800,71 @@ ratio_df.to_excel('/your_save_path/ratio_df.xlsx', index=False)
 # Export to CSV
 ratio_df.to_csv('/your_save_path/ratio_df.csv', index=False)
 ```
+
+---
+
+## Phụ lục: Hướng dẫn chạy `script.py` từng bước (chi tiết)
+
+> Dùng để quét một GitHub repo, lấy danh sách file quan trọng, file Python, và xuất RAW URL ra JSON/CSV.
+
+### Bước 1: Kiểm tra phiên bản Python
+
+```bash
+python --version
+```
+
+Yêu cầu: Python 3.10 trở lên.
+
+### Bước 2: Cài dependencies tối thiểu
+
+```bash
+pip install requests
+```
+
+### Bước 3: (Khuyến nghị) cấu hình GitHub token để tránh rate limit
+
+Linux/macOS:
+
+```bash
+export GITHUB_TOKEN="<your_token>"
+```
+
+Windows PowerShell:
+
+```powershell
+$env:GITHUB_TOKEN="<your_token>"
+```
+
+### Bước 4: Chạy script với URL repo cần phân tích
+
+```bash
+python script.py --repo https://github.com/tradingview/charting-library-examples
+```
+
+### Bước 5: Đọc kết quả in ra màn hình
+
+Script sẽ in JSON tổng hợp gồm:
+
+- `repo_metadata`
+- `important_files`
+- `important_raw_urls`
+- `python_files`
+- `python_raw_urls`
+- `python_data_algo_files`
+- `python_data_algo_raw_urls`
+
+### Bước 6: Mở các file output đã export
+
+Sau khi chạy thành công, kiểm tra thư mục `output/`:
+
+- `output/important_raw_urls.json`
+- `output/important_raw_urls.csv`
+- `output/python_raw_urls.json`
+- `output/python_data_algo_raw_urls.json`
+
+### Bước 7: Xử lý lỗi thường gặp
+
+- Lỗi mạng/proxy: kiểm tra internet hoặc proxy công ty.
+- Rate limit GitHub API: thêm `GITHUB_TOKEN` rồi chạy lại.
+- Repo không có file Python: danh sách `python_files` và `python_data_algo_files` sẽ rỗng (đúng thiết kế).
+
